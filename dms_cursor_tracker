@@ -1,0 +1,65 @@
+from qgis.PyQt.QtWidgets import QDockWidget, QLabel, QAction
+from qgis.PyQt.QtCore import Qt
+from qgis.core import (
+    QgsCoordinateTransform,
+    QgsCoordinateReferenceSystem,
+    QgsProject
+)
+from qgis.gui import QgsMapTool
+
+class DMSCursorTrackerPlugin:
+    def __init__(self, iface):
+        self.iface = iface
+        self.canvas = iface.mapCanvas()
+        self.dock = None
+        self.label = None
+        self.tracker = None
+        self.action = None
+
+    def initGui(self):
+        self.dock = QDockWidget("Cursor DMS Coordinates", self.iface.mainWindow())
+        self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.label = QLabel("Move the cursor over the map...")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.dock.setWidget(self.label)
+        self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+
+        self.tracker = self.DMSCursorTracker(self.canvas, self.label)
+        self.canvas.setMapTool(self.tracker)
+
+        self.action = QAction("Activate DMS Cursor Tracker", self.iface.mainWindow())
+        self.action.triggered.connect(lambda: self.canvas.setMapTool(self.tracker))
+        self.iface.addPluginToMenu("&DMS Cursor Tracker", self.action)
+
+    def unload(self):
+        if self.dock:
+            self.iface.removeDockWidget(self.dock)
+        if self.action:
+            self.iface.removePluginMenu("&DMS Cursor Tracker", self.action)
+
+    class DMSCursorTracker(QgsMapTool):
+        def __init__(self, canvas, label):
+            super().__init__(canvas)
+            self.canvas = canvas
+            self.label = label
+            self.transform = QgsCoordinateTransform(
+                canvas.mapSettings().destinationCrs(),
+                QgsCoordinateReferenceSystem("EPSG:4326"),
+                QgsProject.instance()
+            )
+
+        def canvasMoveEvent(self, event):
+            point = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos().x(), event.pos().y())
+            geo_point = self.transform.transform(point)
+            lat_dms = self.decimal_to_dms(geo_point.y(), is_lat=True)
+            lon_dms = self.decimal_to_dms(geo_point.x(), is_lat=False)
+            self.label.setText(f"Lat: {lat_dms}\nLon: {lon_dms}")
+
+        def decimal_to_dms(self, value, is_lat=True):
+            direction = 'N' if is_lat and value >= 0 else 'S' if is_lat else 'E' if value >= 0 else 'W'
+            value = abs(value)
+            degrees = int(value)
+            minutes_float = (value - degrees) * 60
+            minutes = int(minutes_float)
+            seconds = int(round((minutes_float - minutes) * 60))
+            return f"{degrees}°{minutes:02d}'{seconds:02d}\" {direction}"
