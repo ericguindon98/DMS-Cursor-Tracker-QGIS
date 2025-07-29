@@ -1,0 +1,10 @@
+[general]
+name=DMS Cursor Tracker
+qgisMinimumVersion=3.10
+description=Displays live cursor coordinates in Degrees-Minutes-Seconds (DMS) format in a floating panel.
+version=1.0
+author=Eric Guindon
+email=ericguindon98@gmail.com
+about=This plugin adds a floating panel to QGIS that shows the live geographic coordinates of the cursor in DMS format. Useful for cartographers, GIS analysts, and anyone needing precise coordinate readouts.
+category=Plugins
+icon=icon.png
