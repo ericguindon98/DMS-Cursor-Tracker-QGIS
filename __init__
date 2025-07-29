@@ -1,0 +1,3 @@
+def classFactory(iface):
+    from .dms_cursor_tracker import DMSCursorTrackerPlugin
+    return DMSCursorTrackerPlugin(iface)
