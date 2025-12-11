@@ -2,8 +2,6 @@
 
 **DMS Cursor Tracker** is a lightweight QGIS plugin that displays your cursor's live geographic coordinates in **Degrees-Minutes-Seconds (DMS)** format in a floating panel. It's ideal for cartographers, GIS analysts, and anyone needing precise, readable coordinate feedback while working in QGIS.
 
-!Plugin Icon
-
 ---
 
 ## 🧭 Features
