@@ -3,63 +3,174 @@ from qgis.PyQt.QtCore import Qt
 from qgis.core import (
     QgsCoordinateTransform,
     QgsCoordinateReferenceSystem,
-    QgsProject
+    QgsProject,
+    QgsPointXY
 )
-from qgis.gui import QgsMapTool
+from qgis.gui import QgsMapCanvas
 
 class DMSCursorTrackerPlugin:
     def __init__(self, iface):
         self.iface = iface
-        self.canvas = iface.mapCanvas()
-        self.dock = None
-        self.label = None
-        self.tracker = None
-        self.action = None
+        self.canvas: QgsMapCanvas = iface.mapCanvas()
+        self.dock: QDockWidget | None = None
+        self.label: QLabel | None = None
+        self.action: QAction | None = None
+        self.transform: QgsCoordinateTransform | None = None
+        self._connected = False
 
     def initGui(self):
-        self.dock = QDockWidget("Cursor DMS Coordinates", self.iface.mainWindow())
-        self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-        self.label = QLabel("Move the cursor over the map...")
-        self.label.setAlignment(Qt.AlignCenter)
-        self.dock.setWidget(self.label)
-        self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
-
-        self.tracker = self.DMSCursorTracker(self.canvas, self.label)
-        self.canvas.setMapTool(self.tracker)
-
         self.action = QAction("Activate DMS Cursor Tracker", self.iface.mainWindow())
-        self.action.triggered.connect(lambda: self.canvas.setMapTool(self.tracker))
+        self.action.setCheckable(True)
+        self.action.toggled.connect(self._toggle_tracker)
         self.iface.addPluginToMenu("&DMS Cursor Tracker", self.action)
 
     def unload(self):
-        if self.dock:
-            self.iface.removeDockWidget(self.dock)
+        # Clean up action and dock
         if self.action:
+            try:
+                self.action.toggled.disconnect(self._toggle_tracker)
+            except Exception:
+                pass
             self.iface.removePluginMenu("&DMS Cursor Tracker", self.action)
+            self.action = None
 
-    class DMSCursorTracker(QgsMapTool):
-        def __init__(self, canvas, label):
-            super().__init__(canvas)
-            self.canvas = canvas
-            self.label = label
-            self.transform = QgsCoordinateTransform(
-                canvas.mapSettings().destinationCrs(),
-                QgsCoordinateReferenceSystem("EPSG:4326"),
-                QgsProject.instance()
-            )
+        # Ensure signals are disconnected
+        self._disconnect_signals()
 
-        def canvasMoveEvent(self, event):
-            point = self.canvas.getCoordinateTransform().toMapCoordinates(event.pos().x(), event.pos().y())
+        # Remove dock
+        if self.dock:
+            try:
+                self.iface.removeDockWidget(self.dock)
+            except Exception:
+                pass
+            self.dock = None
+            self.label = None
+
+    # --- Activation / deactivation ---
+
+    def _toggle_tracker(self, checked: bool):
+        if checked:
+            self._activate_tracker()
+        else:
+            self._deactivate_tracker()
+
+    def _activate_tracker(self):
+        if self.dock is None:
+            self._create_dock()
+
+        # Build initial transform and connect for live updates
+        self._rebuild_transform()
+        self._connect_signals()
+
+        if self.dock:
+            self.dock.show()
+        if self.action:
+            self.action.setText("Deactivate DMS Cursor Tracker")
+
+    def _deactivate_tracker(self):
+        self._disconnect_signals()
+        if self.dock:
+            self.dock.hide()
+        if self.action:
+            self.action.setChecked(False)
+            self.action.setText("Activate DMS Cursor Tracker")
+
+    # --- UI helpers ---
+
+    def _create_dock(self):
+        self.dock = QDockWidget("Cursor DMS Coordinates", self.iface.mainWindow())
+        self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        self.label = QLabel("Move the cursor over the map…")
+        self.label.setAlignment(Qt.AlignCenter)
+        self.dock.setWidget(self.label)
+
+        # When user closes the dock (X), deactivate the tracker & disconnect signals
+        def _on_close(event):
+            self._deactivate_tracker()
+            event.accept()
+
+        self.dock.closeEvent = _on_close  # type: ignore
+        self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+
+    # --- Signals & CRS handling ---
+
+    def _connect_signals(self):
+        if self._connected:
+            return
+        # Update coords on mouse move over the map (independent of active tool)
+        self.canvas.xyCoordinates.connect(self._on_xy_coordinates)
+        # Rebuild transform if project CRS or canvas destination CRS changes
+        QgsProject.instance().crsChanged.connect(self._rebuild_transform)
+        try:
+            # Available on modern QGIS: canvas destination CRS change
+            self.canvas.destinationCrsChanged.connect(self._rebuild_transform)  # type: ignore
+        except Exception:
+            pass
+        self._connected = True
+
+    def _disconnect_signals(self):
+        if not self._connected:
+            return
+        try:
+            self.canvas.xyCoordinates.disconnect(self._on_xy_coordinates)
+        except Exception:
+            pass
+        try:
+            QgsProject.instance().crsChanged.disconnect(self._rebuild_transform)
+        except Exception:
+            pass
+        try:
+            self.canvas.destinationCrsChanged.disconnect(self._rebuild_transform)  # type: ignore
+        except Exception:
+            pass
+        self._connected = False
+
+    def _rebuild_transform(self):
+        # Canvas destination CRS -> WGS84 (EPSG:4326)
+        dest_crs = self.canvas.mapSettings().destinationCrs()
+        self.transform = QgsCoordinateTransform(
+            dest_crs,
+            QgsCoordinateReferenceSystem("EPSG:4326"),
+            QgsProject.instance()
+        )
+
+    # --- Slots ---
+
+    def _on_xy_coordinates(self, point: QgsPointXY):
+        if not self.label or not self.transform:
+            return
+        try:
             geo_point = self.transform.transform(point)
-            lat_dms = self.decimal_to_dms(geo_point.y(), is_lat=True)
-            lon_dms = self.decimal_to_dms(geo_point.x(), is_lat=False)
+            lat_dms = self._decimal_to_dms(geo_point.y(), is_lat=True)
+            lon_dms = self._decimal_to_dms(geo_point.x(), is_lat=False)
             self.label.setText(f"Lat: {lat_dms}\nLon: {lon_dms}")
+        except Exception:
+            # Be forgiving if transform not ready, etc.
+            pass
 
-        def decimal_to_dms(self, value, is_lat=True):
-            direction = 'N' if is_lat and value >= 0 else 'S' if is_lat else 'E' if value >= 0 else 'W'
-            value = abs(value)
-            degrees = int(value)
-            minutes_float = (value - degrees) * 60
-            minutes = int(minutes_float)
-            seconds = int(round((minutes_float - minutes) * 60))
-            return f"{degrees}°{minutes:02d}'{seconds:02d}\" {direction}"
+    # --- Utils ---
+
+    def _decimal_to_dms(self, value: float, is_lat: bool = True) -> str:
+        # Direction letters
+        if is_lat:
+            direction = "N" if value >= 0 else "S"
+        else:
+            direction = "E" if value >= 0 else "W"
+
+        value = abs(value)
+        degrees = int(value)
+        minutes_float = (value - degrees) * 60
+        minutes = int(minutes_float)
+        seconds = round((minutes_float - minutes) * 60)
+
+        # Avoid 60" roll-up
+        if seconds == 60:
+            seconds = 0
+            minutes += 1
+        if minutes == 60:
+            minutes = 0
+            degrees += 1
+
+        # Zero-pad mm and ss to match your original output style
+        return f"{degrees}°{minutes:02d}'{int(seconds):02d}\" {direction}"
